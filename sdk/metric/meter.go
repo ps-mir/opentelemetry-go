@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/internal/global"
@@ -27,8 +28,9 @@ var ErrInstrumentName = errors.New("invalid instrument name")
 type meter struct {
 	embedded.Meter
 
-	scope instrumentation.Scope
-	pipes pipelines
+	scope   instrumentation.Scope
+	pipes   pipelines
+	enabled atomic.Bool
 
 	int64Insts             *cacheWithErr[instID, *int64Inst]
 	float64Insts           *cacheWithErr[instID, *float64Inst]
@@ -59,6 +61,10 @@ func newMeter(s instrumentation.Scope, p pipelines) *meter {
 		int64Resolver:          newResolver[int64](p, &viewCache),
 		float64Resolver:        newResolver[float64](p, &viewCache),
 	}
+}
+
+func (m *meter) setEnabled(enabled bool) {
+	m.enabled.Store(enabled)
 }
 
 // Compile-time check meter implements metric.Meter.

@@ -116,8 +116,14 @@ func (mp *MeterProvider) Meter(name string, options ...metric.MeterOption) metri
 	)
 
 	return mp.meters.Lookup(s, func() *meter {
-		// TODO: set initial enabled state from configurator (Step 3: meter.enabled)
-		return newMeter(s, mp.pipes)
+		m := newMeter(s, mp.pipes)
+		m.setEnabled(true)
+		if fn := mp.configurator.Load(); fn != nil {
+			if cr, ok := (*fn)(s).(meterConfigReader); ok {
+				m.setEnabled(cr.Enabled())
+			}
+		}
+		return m
 	})
 }
 
