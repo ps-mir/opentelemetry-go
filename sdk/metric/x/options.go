@@ -45,9 +45,11 @@ type meterConfiguratorProviderOption struct {
 func (meterConfiguratorProviderOption) Experimental() {}
 
 // WithMeterConfigurator returns an [sdkmetric.Option] that wires a
-// [MeterConfiguratorHandle] into a [sdkmetric.MeterProvider]. Updates to the
-// handle via [MeterConfiguratorHandle.Set] trigger an immediate cache walk on
-// the provider.
+// [MeterConfiguratorHandle] into a [sdkmetric.MeterProvider]. The handle must
+// be passed at construction; runtime configurator updates via
+// [MeterConfiguratorHandle.Set] are only supported when a handle is registered
+// here. Providers created without this option cannot have a configurator added
+// later.
 func WithMeterConfigurator(h *MeterConfiguratorHandle) sdkmetric.Option {
 	return meterConfiguratorProviderOption{handle: h}
 }

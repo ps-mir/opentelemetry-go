@@ -76,7 +76,7 @@ func TestMeterConfiguratorHandleSetNoConfigurator(t *testing.T) {
 	opt := WithMeterConfigurator(h)
 	ex := opt.(meterConfiguratorOptionExtractor)
 
-	// no Set called — closure must return zero MeterConfig, not panic
+	// no Set called; closure must return zero MeterConfig, not panic
 	result := ex.MeterConfigurator()(instrumentation.Scope{Name: "test"})
 	cfg, ok := result.(interface{ Enabled() bool })
 	require.True(t, ok)

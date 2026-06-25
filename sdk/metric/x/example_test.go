@@ -23,7 +23,7 @@ func ExampleMeterConfiguratorHandle_Set() {
 	)
 	defer mp.Shutdown(context.Background()) //nolint:errcheck
 
-	// Initial configuration — set before any Meter is created.
+	// Initial configuration, set before any Meter is created.
 	handle.Set(func(s instrumentation.Scope) x.MeterConfig {
 		if s.Name == "com.example.chatty-library" {
 			return x.NewMeterConfig(x.WithMeterEnabled(false))
@@ -31,7 +31,7 @@ func ExampleMeterConfiguratorHandle_Set() {
 		return x.MeterConfig{}
 	})
 
-	// Runtime update — triggers a synchronous cache walk on the MeterProvider.
+	// Runtime update; triggers a synchronous cache walk on the MeterProvider.
 	handle.Set(func(s instrumentation.Scope) x.MeterConfig {
 		if s.Name == "com.example.other-library" {
 			return x.NewMeterConfig(x.WithMeterEnabled(false))
