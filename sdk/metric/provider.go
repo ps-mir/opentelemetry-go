@@ -22,6 +22,7 @@ type meterConfigReader interface{ Enabled() bool }
 type meterConfiguratorOption interface {
 	Experimental()
 	MeterConfigurator() func(instrumentation.Scope) any
+	RegisterOnUpdate(func())
 }
 
 // MeterProvider handles the creation and coordination of Meters. All Meters
@@ -62,6 +63,9 @@ func NewMeterProvider(options ...Option) *MeterProvider {
 		if mco, ok := o.(meterConfiguratorOption); ok {
 			fn := meterConfigurator(mco.MeterConfigurator())
 			mp.configurator.Store(&fn)
+			mco.RegisterOnUpdate(func() {
+				// TODO: walk meters cache and update enabled state (Step 2: cache.Range)
+			})
 		}
 	}
 
@@ -115,14 +119,6 @@ func (mp *MeterProvider) Meter(name string, options ...metric.MeterOption) metri
 		// TODO: set initial enabled state from configurator (Step 3: meter.enabled)
 		return newMeter(s, mp.pipes)
 	})
-}
-
-// SetMeterConfigurator sets the MeterConfigurator on the MeterProvider,
-// satisfying [x.MeterConfiguratorUpdater] implicitly.
-func (mp *MeterProvider) SetMeterConfigurator(fn func(instrumentation.Scope) any) {
-	c := meterConfigurator(fn)
-	mp.configurator.Store(&c)
-	// TODO: walk meters cache and update enabled state (Step 2: cache.Range)
 }
 
 // ForceFlush flushes all pending telemetry.
