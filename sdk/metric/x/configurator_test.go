@@ -15,10 +15,13 @@ type meterConfiguratorOptionExtractor interface {
 	MeterConfigurator() func(instrumentation.Scope) any
 }
 
+type meterConfiguratorOnUpdateRegistrar interface {
+	RegisterOnUpdate(func())
+}
+
 func TestWithMeterConfiguratorContract(t *testing.T) {
-	opt := WithMeterConfigurator(func(s instrumentation.Scope) MeterConfig {
-		return MeterConfig{}
-	})
+	h := NewMeterConfiguratorHandle()
+	opt := WithMeterConfigurator(h)
 
 	type experimental interface{ Experimental() }
 	_, ok := opt.(experimental)
@@ -26,13 +29,18 @@ func TestWithMeterConfiguratorContract(t *testing.T) {
 
 	_, ok = opt.(meterConfiguratorOptionExtractor)
 	require.True(t, ok, "must implement MeterConfigurator() func(scope) any")
+
+	_, ok = opt.(meterConfiguratorOnUpdateRegistrar)
+	require.True(t, ok, "must implement RegisterOnUpdate(func())")
 }
 
 func TestWithMeterConfiguratorBehavior(t *testing.T) {
-	opt := WithMeterConfigurator(func(s instrumentation.Scope) MeterConfig {
+	h := NewMeterConfiguratorHandle()
+	h.Set(func(s instrumentation.Scope) MeterConfig {
 		return NewMeterConfig(WithMeterEnabled(s.Name != "disabled"))
 	})
 
+	opt := WithMeterConfigurator(h)
 	ex := opt.(meterConfiguratorOptionExtractor)
 
 	for _, tc := range []struct {
@@ -50,4 +58,27 @@ func TestWithMeterConfiguratorBehavior(t *testing.T) {
 			assert.Equal(t, tc.enabled, cfg.Enabled())
 		})
 	}
+}
+
+func TestMeterConfiguratorHandleSet(t *testing.T) {
+	h := NewMeterConfiguratorHandle()
+
+	walked := false
+	opt := WithMeterConfigurator(h)
+	opt.(meterConfiguratorOnUpdateRegistrar).RegisterOnUpdate(func() { walked = true })
+
+	h.Set(func(s instrumentation.Scope) MeterConfig { return MeterConfig{} })
+	assert.True(t, walked, "Set must trigger the registered onUpdate callback")
+}
+
+func TestMeterConfiguratorHandleSetNoConfigurator(t *testing.T) {
+	h := NewMeterConfiguratorHandle()
+	opt := WithMeterConfigurator(h)
+	ex := opt.(meterConfiguratorOptionExtractor)
+
+	// no Set called — closure must return zero MeterConfig, not panic
+	result := ex.MeterConfigurator()(instrumentation.Scope{Name: "test"})
+	cfg, ok := result.(interface{ Enabled() bool })
+	require.True(t, ok)
+	assert.True(t, cfg.Enabled(), "zero MeterConfig must be enabled")
 }

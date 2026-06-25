@@ -4,44 +4,68 @@
 package x
 
 import (
+	"sync/atomic"
+
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
-type meterConfiguratorProviderOption struct {
-	// nil embed, skip guard in newConfig prevents apply from being called
-	sdkmetric.Option
-	configurator MeterConfigurator
+// MeterConfiguratorHandle holds a [MeterConfigurator] that can be updated at
+// runtime. Pass it to [WithMeterConfigurator] at [sdkmetric.MeterProvider]
+// construction. Calls to [MeterConfiguratorHandle.Set] are reflected
+// immediately across all existing meters via a synchronous cache walk.
+type MeterConfiguratorHandle struct {
+	configurator atomic.Pointer[MeterConfigurator]
+	onUpdate     atomic.Pointer[func()] // To avoid race between handle.Set() and RegisterOnUpdate
 }
 
-// Experimental marks this as an experimental option so the skip guard
-// in newConfig() skips calling the nil embedded apply().
-func (meterConfiguratorProviderOption) Experimental() {}
-
-// WithMeterConfigurator returns an [sdkmetric.Option] that sets the
-// MeterConfigurator on a MeterProvider.
-func WithMeterConfigurator(fn MeterConfigurator) sdkmetric.Option {
-	return meterConfiguratorProviderOption{configurator: fn}
+// NewMeterConfiguratorHandle returns a new [MeterConfiguratorHandle] with no
+// configurator set.
+func NewMeterConfiguratorHandle() *MeterConfiguratorHandle {
+	return &MeterConfiguratorHandle{}
 }
 
-// MeterConfigurator returns the configurator as func(scope) any so
-// sdk/metric can extract it via duck-type without importing this package.
-func (co meterConfiguratorProviderOption) MeterConfigurator() func(instrumentation.Scope) any {
-	return func(s instrumentation.Scope) any {
-		return co.configurator(s)
+// Set updates the [MeterConfigurator] and triggers a synchronous cache walk on
+// the [sdkmetric.MeterProvider] registered via [WithMeterConfigurator].
+func (h *MeterConfiguratorHandle) Set(fn MeterConfigurator) {
+	h.configurator.Store(&fn)
+	if cb := h.onUpdate.Load(); cb != nil {
+		(*cb)()
 	}
 }
 
-// MeterConfiguratorUpdater is implemented by MeterProviders that support
-// runtime configurator updates. Type-assert a MeterProvider to this interface
-// to update its configurator after construction
-type MeterConfiguratorUpdater interface {
-	SetMeterConfigurator(func(instrumentation.Scope) any)
+type meterConfiguratorProviderOption struct {
+	// nil embed; skip guard in newConfig prevents apply from being called.
+	sdkmetric.Option
+	handle *MeterConfiguratorHandle
 }
 
-// SetMeterConfigurator updates the MeterConfigurator on MeterProvider which support that operation
-func SetMeterConfigurator(meterProvider MeterConfiguratorUpdater, fn MeterConfigurator) {
-	meterProvider.SetMeterConfigurator(func(s instrumentation.Scope) any {
-		return fn(s)
-	})
+// Experimental marks this as an experimental option so the skip guard in
+// newConfig skips calling the nil embedded apply.
+func (meterConfiguratorProviderOption) Experimental() {}
+
+// WithMeterConfigurator returns an [sdkmetric.Option] that wires a
+// [MeterConfiguratorHandle] into a [sdkmetric.MeterProvider]. Updates to the
+// handle via [MeterConfiguratorHandle.Set] trigger an immediate cache walk on
+// the provider.
+func WithMeterConfigurator(h *MeterConfiguratorHandle) sdkmetric.Option {
+	return meterConfiguratorProviderOption{handle: h}
+}
+
+// MeterConfigurator returns a closure over the handle so sdk/metric can call
+// it via duck-type without importing this package.
+func (o meterConfiguratorProviderOption) MeterConfigurator() func(instrumentation.Scope) any {
+	return func(s instrumentation.Scope) any {
+		if p := o.handle.configurator.Load(); p != nil {
+			return (*p)(s)
+		}
+		return MeterConfig{}
+	}
+}
+
+// RegisterOnUpdate is called by sdk/metric during [sdkmetric.NewMeterProvider]
+// to register the cache walk callback. Called once at construction; subsequent
+// [MeterConfiguratorHandle.Set] calls trigger it.
+func (o meterConfiguratorProviderOption) RegisterOnUpdate(fn func()) {
+	o.handle.onUpdate.Store(&fn)
 }
