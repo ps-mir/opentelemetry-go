@@ -111,10 +111,9 @@ func TestConfiguratorCachedMeterNotUpdated(t *testing.T) {
 	assert.True(t, cachedMeter.enabled.Load(), "meter should be enabled before configurator update")
 
 	// Swap configurator to disable all scopes and simulate handle.Set().
-	newFn := meterConfigurator(func(s instrumentation.Scope) any {
+	mp.configurator = func(s instrumentation.Scope) any {
 		return testMeterConfig{enabled: false}
-	})
-	mp.configurator.Store(&newFn)
+	}
 	if storedCallback != nil {
 		storedCallback()
 	}

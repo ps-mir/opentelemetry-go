@@ -34,7 +34,10 @@ type MeterProvider struct {
 
 	pipes        pipelines
 	meters       cache[instrumentation.Scope, *meter]
-	configurator atomic.Pointer[meterConfigurator]
+	// configurator is written once, in NewMeterProvider before mp is returned to
+	// any caller, and never reassigned after. No synchronization is needed for
+	// that single write or the reads that follow it.
+	configurator meterConfigurator
 
 	forceFlush, shutdown func(context.Context) error
 	stopped              atomic.Bool
@@ -61,8 +64,7 @@ func NewMeterProvider(options ...Option) *MeterProvider {
 
 	for _, o := range options {
 		if mco, ok := o.(meterConfiguratorOption); ok {
-			fn := meterConfigurator(mco.MeterConfigurator())
-			mp.configurator.Store(&fn)
+			mp.configurator = mco.MeterConfigurator()
 			mco.RegisterOnUpdate(func() {
 				// TODO: walk meters cache and update enabled state (Step 2: cache.Range)
 			})
@@ -118,8 +120,8 @@ func (mp *MeterProvider) Meter(name string, options ...metric.MeterOption) metri
 	return mp.meters.Lookup(s, func() *meter {
 		m := newMeter(s, mp.pipes)
 		m.setEnabled(true)
-		if fn := mp.configurator.Load(); fn != nil {
-			if cr, ok := (*fn)(s).(meterConfigReader); ok {
+		if mp.configurator != nil {
+			if cr, ok := mp.configurator(s).(meterConfigReader); ok {
 				m.setEnabled(cr.Enabled())
 			}
 		}
