@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/otel/sdk/instrumentation"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // testMeterConfig satisfies meterConfigReader without importing sdk/metric/x.
@@ -155,4 +156,41 @@ func TestInstrumentEnabledReflectsConfigurator(t *testing.T) {
 	require.NotNil(t, storedCallback)
 	storedCallback()
 	assert.True(t, ctr.Enabled(context.Background()), "instrument should reflect re-enabled meter")
+}
+
+func TestInstrumentAddGatedByConfigurator(t *testing.T) {
+	var storedCallback func()
+	configuratorOpt := testConfiguratorOpt{
+		fn: func(s instrumentation.Scope) any {
+			return testMeterConfig{enabled: s.Name != "disabled"}
+		},
+		onUpdate: func(cb func()) { storedCallback = cb },
+	}
+
+	rdr := NewManualReader()
+	mp := NewMeterProvider(WithReader(rdr), configuratorOpt)
+	defer mp.Shutdown(context.Background()) //nolint:errcheck
+
+	ctr, err := mp.Meter("disabled").Int64Counter("ctr")
+	require.NoError(t, err)
+
+	ctr.Add(context.Background(), 5)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, rdr.Collect(context.Background(), &rm))
+	assert.Empty(t, rm.ScopeMetrics, "Add on a disabled meter should not reach the aggregator")
+
+	// Re-enable and confirm Add() now reaches the aggregator.
+	mp.configurator = func(instrumentation.Scope) any {
+		return testMeterConfig{enabled: true}
+	}
+	require.NotNil(t, storedCallback)
+	storedCallback()
+
+	ctr.Add(context.Background(), 7)
+
+	rm = metricdata.ResourceMetrics{}
+	require.NoError(t, rdr.Collect(context.Background(), &rm))
+	require.Len(t, rm.ScopeMetrics, 1)
+	require.Len(t, rm.ScopeMetrics[0].Metrics, 1)
 }
