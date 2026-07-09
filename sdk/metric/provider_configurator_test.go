@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -188,6 +189,44 @@ func TestInstrumentAddGatedByConfigurator(t *testing.T) {
 	storedCallback()
 
 	ctr.Add(context.Background(), 7)
+
+	rm = metricdata.ResourceMetrics{}
+	require.NoError(t, rdr.Collect(context.Background(), &rm))
+	require.Len(t, rm.ScopeMetrics, 1)
+	require.Len(t, rm.ScopeMetrics[0].Metrics, 1)
+}
+
+func TestObservableCallbackGatedByConfigurator(t *testing.T) {
+	var storedCallback func()
+	configuratorOpt := testConfiguratorOpt{
+		fn: func(s instrumentation.Scope) any {
+			return testMeterConfig{enabled: s.Name != "disabled"}
+		},
+		onUpdate: func(cb func()) { storedCallback = cb },
+	}
+
+	rdr := NewManualReader()
+	mp := NewMeterProvider(WithReader(rdr), configuratorOpt)
+	defer mp.Shutdown(context.Background()) //nolint:errcheck
+
+	_, err := mp.Meter("disabled").Int64ObservableCounter("ctr", metric.WithInt64Callback(
+		func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(5)
+			return nil
+		},
+	))
+	require.NoError(t, err)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, rdr.Collect(context.Background(), &rm))
+	assert.Empty(t, rm.ScopeMetrics, "callback Observe on a disabled meter should not reach the aggregator")
+
+	// Re-enable and confirm the callback's Observe() now reaches the aggregator.
+	mp.configurator = func(instrumentation.Scope) any {
+		return testMeterConfig{enabled: true}
+	}
+	require.NotNil(t, storedCallback)
+	storedCallback()
 
 	rm = metricdata.ResourceMetrics{}
 	require.NoError(t, rdr.Collect(context.Background(), &rm))
