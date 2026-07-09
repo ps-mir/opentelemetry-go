@@ -598,6 +598,9 @@ func (r observer) ObserveFloat64(o metric.Float64Observable, v float64, opts ...
 		}
 		return
 	}
+	if !oImpl.meter.enabled.Load() {
+		return
+	}
 	c := metric.NewObserveConfig(opts)
 	rawKVs := extractRawKVs(opts)
 	set := resolveAttributes(c.Attributes(), rawKVs)
@@ -629,6 +632,9 @@ func (r observer) ObserveInt64(o metric.Int64Observable, v int64, opts ...metric
 				"number", fmt.Sprintf("%T", int64(0)),
 			)
 		}
+		return
+	}
+	if !oImpl.meter.enabled.Load() {
 		return
 	}
 	c := metric.NewObserveConfig(opts)

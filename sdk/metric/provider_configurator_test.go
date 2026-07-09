@@ -233,3 +233,43 @@ func TestObservableCallbackGatedByConfigurator(t *testing.T) {
 	require.Len(t, rm.ScopeMetrics, 1)
 	require.Len(t, rm.ScopeMetrics[0].Metrics, 1)
 }
+
+func TestObserverObserveGatedByConfigurator(t *testing.T) {
+	var storedCallback func()
+	configuratorOpt := testConfiguratorOpt{
+		fn: func(s instrumentation.Scope) any {
+			return testMeterConfig{enabled: s.Name != "disabled"}
+		},
+		onUpdate: func(cb func()) { storedCallback = cb },
+	}
+
+	rdr := NewManualReader()
+	mp := NewMeterProvider(WithReader(rdr), configuratorOpt)
+	defer mp.Shutdown(context.Background()) //nolint:errcheck
+
+	m := mp.Meter("disabled")
+	ctr, err := m.Int64ObservableCounter("ctr")
+	require.NoError(t, err)
+
+	_, err = m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		o.ObserveInt64(ctr, 5)
+		return nil
+	}, ctr)
+	require.NoError(t, err)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, rdr.Collect(context.Background(), &rm))
+	assert.Empty(t, rm.ScopeMetrics, "ObserveInt64 on a disabled meter should not reach the aggregator")
+
+	// Re-enable and confirm ObserveInt64 now reaches the aggregator.
+	mp.configurator = func(instrumentation.Scope) any {
+		return testMeterConfig{enabled: true}
+	}
+	require.NotNil(t, storedCallback)
+	storedCallback()
+
+	rm = metricdata.ResourceMetrics{}
+	require.NoError(t, rdr.Collect(context.Background(), &rm))
+	require.Len(t, rm.ScopeMetrics, 1)
+	require.Len(t, rm.ScopeMetrics[0].Metrics, 1)
+}
