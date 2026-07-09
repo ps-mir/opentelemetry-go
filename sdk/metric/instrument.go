@@ -223,6 +223,7 @@ func resolveAttributes(configAttrs attribute.Set, rawKVs []attribute.KeyValue) a
 
 type int64Inst struct {
 	measures []aggregate.Measure[int64]
+	meter    *meter
 
 	embedded.Int64Counter
 	embedded.Int64UpDownCounter
@@ -265,6 +266,7 @@ func (i *int64Inst) aggregate(
 
 type float64Inst struct {
 	measures []aggregate.Measure[float64]
+	meter    *meter
 
 	embedded.Float64Counter
 	embedded.Float64UpDownCounter
