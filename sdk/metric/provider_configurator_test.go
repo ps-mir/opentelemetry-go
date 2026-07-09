@@ -91,7 +91,7 @@ func TestMeterConfiguratorNewMeter(t *testing.T) {
 	}
 }
 
-func TestConfiguratorCachedMeterNotUpdated(t *testing.T) {
+func TestConfiguratorCacheWalkUpdatesCachedMeter(t *testing.T) {
 	var storedCallback func()
 	configuratorOpt := testConfiguratorOpt{
 		fn: func(s instrumentation.Scope) any {
@@ -118,9 +118,8 @@ func TestConfiguratorCachedMeterNotUpdated(t *testing.T) {
 		storedCallback()
 	}
 
-	// Cached meter is not updated without cache walk.
-	// TODO: assert enabled=false once cache walk is implemented (Step 2: cache.Range)
-	assert.True(t, cachedMeter.enabled.Load(), "cached meter not updated without cache walk")
+	// Cached meter is updated by the cache walk triggered via onUpdate.
+	assert.False(t, cachedMeter.enabled.Load(), "cached meter should be updated by cache walk")
 
 	// New meter picks up the updated configurator.
 	_ = mp.Meter("disabled")

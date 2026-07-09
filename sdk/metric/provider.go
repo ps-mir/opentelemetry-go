@@ -66,7 +66,11 @@ func NewMeterProvider(options ...Option) *MeterProvider {
 		if mco, ok := o.(meterConfiguratorOption); ok {
 			mp.configurator = mco.MeterConfigurator()
 			mco.RegisterOnUpdate(func() {
-				// TODO: walk meters cache and update enabled state (Step 2: cache.Range)
+				mp.meters.Range(func(s instrumentation.Scope, m *meter) {
+					if cr, ok := mp.configurator(s).(meterConfigReader); ok {
+						m.setEnabled(cr.Enabled())
+					}
+				})
 			})
 		}
 	}

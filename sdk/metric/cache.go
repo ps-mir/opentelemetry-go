@@ -52,6 +52,20 @@ func (c *cache[K, V]) HasKey(key K) bool {
 	return ok
 }
 
+// Range calls f for every key-value pair currently in the cache.
+//
+// Range is safe to call concurrently. It holds the cache lock for the
+// duration of the iteration, so f should not block excessively and must not
+// call any other method on the same cache (doing so deadlocks, since the
+// underlying mutex is not reentrant).
+func (c *cache[K, V]) Range(f func(K, V)) {
+	c.Lock()
+	defer c.Unlock()
+	for k, v := range c.data {
+		f(k, v)
+	}
+}
+
 // cacheWithErr is a locking storage used to quickly return already computed values and an error.
 //
 // The zero value of a cacheWithErr is empty and ready to use.
