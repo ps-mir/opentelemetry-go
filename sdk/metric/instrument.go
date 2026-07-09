@@ -251,7 +251,7 @@ func (i *int64Inst) Record(ctx context.Context, val int64, opts ...metric.Record
 }
 
 func (i *int64Inst) Enabled(context.Context) bool {
-	return len(i.measures) != 0
+	return len(i.measures) != 0 && i.meter.enabled.Load()
 }
 
 func (i *int64Inst) aggregate(
@@ -294,7 +294,7 @@ func (i *float64Inst) Record(ctx context.Context, val float64, opts ...metric.Re
 }
 
 func (i *float64Inst) Enabled(context.Context) bool {
-	return len(i.measures) != 0
+	return len(i.measures) != 0 && i.meter.enabled.Load()
 }
 
 func (i *float64Inst) aggregate(ctx context.Context, val float64, s attribute.Set) {

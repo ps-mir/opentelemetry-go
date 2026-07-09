@@ -128,3 +128,31 @@ func TestConfiguratorCacheWalkUpdatesCachedMeter(t *testing.T) {
 	})
 	assert.False(t, newM.enabled.Load(), "new meter should pick up updated configurator")
 }
+
+func TestInstrumentEnabledReflectsConfigurator(t *testing.T) {
+	var storedCallback func()
+	configuratorOpt := testConfiguratorOpt{
+		fn: func(s instrumentation.Scope) any {
+			return testMeterConfig{enabled: s.Name != "disabled"}
+		},
+		onUpdate: func(cb func()) { storedCallback = cb },
+	}
+
+	rdr := NewManualReader()
+	mp := NewMeterProvider(WithReader(rdr), configuratorOpt)
+	defer mp.Shutdown(context.Background()) //nolint:errcheck
+
+	m := mp.Meter("disabled")
+	ctr, err := m.Int64Counter("ctr")
+	require.NoError(t, err)
+	assert.False(t, ctr.Enabled(context.Background()), "instrument in disabled scope should report Enabled=false")
+
+	// Re-enable via configurator update; Enabled() should reflect the live
+	// meter state rather than a value captured at instrument-creation time.
+	mp.configurator = func(instrumentation.Scope) any {
+		return testMeterConfig{enabled: true}
+	}
+	require.NotNil(t, storedCallback)
+	storedCallback()
+	assert.True(t, ctr.Enabled(context.Background()), "instrument should reflect re-enabled meter")
+}
