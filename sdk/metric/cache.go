@@ -54,14 +54,23 @@ func (c *cache[K, V]) HasKey(key K) bool {
 
 // Range calls f for every key-value pair currently in the cache.
 //
-// Range is safe to call concurrently. It holds the cache lock for the
-// duration of the iteration, so f should not block excessively and must not
-// call any other method on the same cache (doing so deadlocks, since the
-// underlying mutex is not reentrant).
+// Range is safe to call concurrently, but that safety covers the cache
+// only, not f: the cache stays consistent no matter how many goroutines
+// call Range, Lookup, or HasKey at once, but f itself gets no such
+// guarantee. Range holds the cache lock only long enough to snapshot the
+// cache contents, not for the duration of the iteration, so f is free to
+// call other cache methods, including this one, without deadlocking.
+// Overlapping Range calls invoke f concurrently and unlocked; making that
+// safe is the caller's responsibility.
 func (c *cache[K, V]) Range(f func(K, V)) {
 	c.Lock()
-	defer c.Unlock()
+	data := make(map[K]V, len(c.data))
 	for k, v := range c.data {
+		data[k] = v
+	}
+	c.Unlock()
+
+	for k, v := range data {
 		f(k, v)
 	}
 }
