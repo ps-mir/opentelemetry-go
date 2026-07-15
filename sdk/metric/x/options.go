@@ -26,7 +26,11 @@ func NewMeterConfiguratorHandle() *MeterConfiguratorHandle {
 }
 
 // Set updates the [MeterConfigurator] and triggers a synchronous cache walk on
-// the [sdkmetric.MeterProvider] registered via [WithMeterConfigurator].
+// the [sdkmetric.MeterProvider] registered via [WithMeterConfigurator]. Set
+// does not return until that walk completes. Because the walk invokes fn once
+// per existing Meter, Set's duration scales with both the number of Meters on
+// the MeterProvider and fn's own latency. See [MeterConfigurator] for the
+// requirements this places on fn.
 func (h *MeterConfiguratorHandle) Set(fn MeterConfigurator) {
 	h.configurator.Store(&fn)
 	if cb := h.onUpdate.Load(); cb != nil {

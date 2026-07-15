@@ -45,7 +45,18 @@ func (o meterEnabledOption) applyMeterConfig(c *MeterConfig) {
 	c.disabled = !bool(o)
 }
 
-// MeterConfigurator is called by a MeterProvider when a Meter is created.
-// It receives the instrumentation scope and returns the runtime configuration
-// for that Meter.
+// MeterConfigurator is called by a MeterProvider when a Meter is created, and
+// again for every existing Meter each time [MeterConfiguratorHandle.Set] is
+// called. It receives the instrumentation scope and returns the runtime
+// configuration for that Meter.
+//
+// Implementations must return quickly and must not block: a slow or blocked
+// call can stall Meter creation and configuration updates for the whole
+// MeterProvider, not just the caller that triggered it. Implementations must
+// also not panic; a panic is not recovered and propagates to the caller of
+// Meter or [MeterConfiguratorHandle.Set].
+//
+// A MeterConfigurator may be called more than once for the same
+// instrumentation scope over the lifetime of a MeterProvider, and should be
+// efficient and idempotent to call repeatedly for the same scope.
 type MeterConfigurator func(instrumentation.Scope) MeterConfig
