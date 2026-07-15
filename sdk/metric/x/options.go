@@ -4,6 +4,7 @@
 package x
 
 import (
+	"sync"
 	"sync/atomic"
 
 	"go.opentelemetry.io/otel/sdk/instrumentation"
@@ -15,6 +16,7 @@ import (
 // construction. Calls to [MeterConfiguratorHandle.Set] are reflected
 // immediately across all existing meters via a synchronous cache walk.
 type MeterConfiguratorHandle struct {
+	mu           sync.Mutex // serializes Set calls; see Set's doc comment
 	configurator atomic.Pointer[MeterConfigurator]
 	onUpdate     atomic.Pointer[func()] // To avoid race between handle.Set() and RegisterOnUpdate
 }
@@ -31,7 +33,16 @@ func NewMeterConfiguratorHandle() *MeterConfiguratorHandle {
 // per existing Meter, Set's duration scales with both the number of Meters on
 // the MeterProvider and fn's own latency. See [MeterConfigurator] for the
 // requirements this places on fn.
+//
+// Concurrent calls to Set are serialized: a Set call blocks until any
+// already-in-progress Set, including its cache walk, has completed. This
+// keeps one Set's cache walk from partially overwriting another's result
+// across different meters. The callback registered via RegisterOnUpdate must
+// not call Set on the same handle; doing so deadlocks, since this lock is
+// not reentrant.
 func (h *MeterConfiguratorHandle) Set(fn MeterConfigurator) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.configurator.Store(&fn)
 	if cb := h.onUpdate.Load(); cb != nil {
 		(*cb)()

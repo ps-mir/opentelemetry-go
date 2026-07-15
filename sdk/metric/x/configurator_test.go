@@ -4,7 +4,9 @@
 package x
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,6 +71,55 @@ func TestMeterConfiguratorHandleSet(t *testing.T) {
 
 	h.Set(func(s instrumentation.Scope) MeterConfig { return MeterConfig{} })
 	assert.True(t, walked, "Set must trigger the registered onUpdate callback")
+}
+
+func TestMeterConfiguratorHandleSetSerializesConcurrentCalls(t *testing.T) {
+	h := NewMeterConfiguratorHandle()
+	opt := WithMeterConfigurator(h)
+
+	var (
+		mu      sync.Mutex
+		active  int
+		overlap bool
+	)
+	opt.(meterConfiguratorOnUpdateRegistrar).RegisterOnUpdate(func() {
+		mu.Lock()
+		active++
+		if active > 1 {
+			overlap = true
+		}
+		mu.Unlock()
+
+		time.Sleep(10 * time.Millisecond)
+
+		mu.Lock()
+		active--
+		mu.Unlock()
+	})
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.Set(func(instrumentation.Scope) MeterConfig { return MeterConfig{} })
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "timeout waiting for concurrent Set calls")
+	}
+
+	assert.False(t, overlap, "concurrent Set calls' onUpdate callbacks overlapped")
 }
 
 func TestMeterConfiguratorHandleSetNoConfigurator(t *testing.T) {
