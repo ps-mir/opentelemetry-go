@@ -36,7 +36,7 @@ jobs:
     name: Benchmarks
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     container:
-      image: ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e
+      image: ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb
     strategy:
       matrix:
         shard: ${{ fromJson(needs.sharding-benchmark.outputs.shards) }}
@@ -47,7 +47,7 @@ jobs:
           apt-get update
           apt-get install -y make build-essential git ca-certificates curl
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.DEFAULT_GO_VERSION }}
           check-latest: true
