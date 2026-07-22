@@ -15,6 +15,16 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/internal/attrdedup"
 )
 
+type meterConfigurator func(instrumentation.Scope) any
+
+type meterConfigReader interface{ Enabled() bool }
+
+type meterConfiguratorOption interface {
+	Experimental()
+	MeterConfigurator() func(instrumentation.Scope) any
+	RegisterOnUpdate(func())
+}
+
 // MeterProvider handles the creation and coordination of Meters. All Meters
 // created by a MeterProvider will be associated with the same Resource, have
 // the same Views applied to them, and have their produced metric telemetry
@@ -22,8 +32,12 @@ import (
 type MeterProvider struct {
 	embedded.MeterProvider
 
-	pipes  pipelines
-	meters cache[instrumentation.Scope, *meter]
+	pipes        pipelines
+	meters       cache[instrumentation.Scope, *meter]
+	// configurator is written once, in NewMeterProvider before mp is returned to
+	// any caller, and never reassigned after. No synchronization is needed for
+	// that single write or the reads that follow it.
+	configurator meterConfigurator
 
 	forceFlush, shutdown func(context.Context) error
 	stopped              atomic.Bool
@@ -47,6 +61,20 @@ func NewMeterProvider(options ...Option) *MeterProvider {
 		forceFlush: flush,
 		shutdown:   sdown,
 	}
+
+	for _, o := range options {
+		if mco, ok := o.(meterConfiguratorOption); ok {
+			mp.configurator = mco.MeterConfigurator()
+			mco.RegisterOnUpdate(func() {
+				mp.meters.Range(func(s instrumentation.Scope, m *meter) {
+					if cr, ok := mp.configurator(s).(meterConfigReader); ok {
+						m.setEnabled(cr.Enabled())
+					}
+				})
+			})
+		}
+	}
+
 	// Log after creation so all readers show correctly they are registered.
 	global.Info(
 		"MeterProvider created",
@@ -94,7 +122,14 @@ func (mp *MeterProvider) Meter(name string, options ...metric.MeterOption) metri
 	)
 
 	return mp.meters.Lookup(s, func() *meter {
-		return newMeter(s, mp.pipes)
+		m := newMeter(s, mp.pipes)
+		m.setEnabled(true)
+		if mp.configurator != nil {
+			if cr, ok := mp.configurator(s).(meterConfigReader); ok {
+				m.setEnabled(cr.Enabled())
+			}
+		}
+		return m
 	})
 }
 
