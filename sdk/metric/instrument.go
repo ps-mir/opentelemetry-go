@@ -142,6 +142,9 @@ type Stream struct {
 	// the attribute will not be recorded, otherwise, if it returns true, it
 	// will record the attribute.
 	//
+	// If nil, the instrument's advisory attribute keys are used. If the
+	// instrument has no advisory attribute keys, all attributes are recorded.
+	//
 	// Note that attributes filtered out by a View may still appear on Exemplars,
 	// because Exemplars are recorded with the dropped measurement attributes
 	// when View attribute filtering is applied.
@@ -207,11 +210,11 @@ func extractRawKVs[T any](opts []T) []attribute.KeyValue {
 }
 
 func resolveAttributes(configAttrs attribute.Set, rawKVs []attribute.KeyValue) attribute.Set {
-	configAttrs, _ = attrnorm.Set(configAttrs)
+	configAttrs, _ = attrnorm.SetDedup(configAttrs)
 	if len(rawKVs) == 0 {
 		return configAttrs
 	}
-	rawKVs, _ = attrnorm.KeyValues(rawKVs)
+	rawKVs, _ = attrnorm.KeyValuesDedup(rawKVs)
 	merged := make([]attribute.KeyValue, 0, configAttrs.Len()+len(rawKVs))
 	merged = append(merged, configAttrs.ToSlice()...)
 	// rawKVs are appended after configAttrs, meaning they will override any duplicate keys in configAttrs.
@@ -223,6 +226,7 @@ func resolveAttributes(configAttrs attribute.Set, rawKVs []attribute.KeyValue) a
 
 type int64Inst struct {
 	measures []aggregate.Measure[int64]
+	meter    *meter
 
 	embedded.Int64Counter
 	embedded.Int64UpDownCounter
@@ -238,19 +242,25 @@ var (
 )
 
 func (i *int64Inst) Add(ctx context.Context, val int64, opts ...metric.AddOption) {
+	if !i.meter.enabled.Load() {
+		return
+	}
 	c := metric.NewAddConfig(opts)
 	rawKVs := extractRawKVs(opts)
 	i.aggregate(ctx, val, resolveAttributes(c.Attributes(), rawKVs))
 }
 
 func (i *int64Inst) Record(ctx context.Context, val int64, opts ...metric.RecordOption) {
+	if !i.meter.enabled.Load() {
+		return
+	}
 	c := metric.NewRecordConfig(opts)
 	rawKVs := extractRawKVs(opts)
 	i.aggregate(ctx, val, resolveAttributes(c.Attributes(), rawKVs))
 }
 
 func (i *int64Inst) Enabled(context.Context) bool {
-	return len(i.measures) != 0
+	return len(i.measures) != 0 && i.meter.enabled.Load()
 }
 
 func (i *int64Inst) aggregate(
@@ -265,6 +275,7 @@ func (i *int64Inst) aggregate(
 
 type float64Inst struct {
 	measures []aggregate.Measure[float64]
+	meter    *meter
 
 	embedded.Float64Counter
 	embedded.Float64UpDownCounter
@@ -280,19 +291,25 @@ var (
 )
 
 func (i *float64Inst) Add(ctx context.Context, val float64, opts ...metric.AddOption) {
+	if !i.meter.enabled.Load() {
+		return
+	}
 	c := metric.NewAddConfig(opts)
 	rawKVs := extractRawKVs(opts)
 	i.aggregate(ctx, val, resolveAttributes(c.Attributes(), rawKVs))
 }
 
 func (i *float64Inst) Record(ctx context.Context, val float64, opts ...metric.RecordOption) {
+	if !i.meter.enabled.Load() {
+		return
+	}
 	c := metric.NewRecordConfig(opts)
 	rawKVs := extractRawKVs(opts)
 	i.aggregate(ctx, val, resolveAttributes(c.Attributes(), rawKVs))
 }
 
 func (i *float64Inst) Enabled(context.Context) bool {
-	return len(i.measures) != 0
+	return len(i.measures) != 0 && i.meter.enabled.Load()
 }
 
 func (i *float64Inst) aggregate(ctx context.Context, val float64, s attribute.Set) {
