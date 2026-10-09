@@ -298,7 +298,143 @@ func TestTimeout(t *testing.T) {
 		assert.NoError(t, exporter.Shutdown(ctx))
 	}()
 	err = exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan())
-	assert.ErrorContains(t, err, "Client.Timeout exceeded while awaiting headers")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		assert.ErrorContains(t, err, "exporter export timeout")
+	}
+}
+
+func TestTimeoutBoundsRetry(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := otlptracehttp.NewClient(
+		otlptracehttp.WithEndpointURL(srv.URL),
+		otlptracehttp.WithInsecure(),
+		otlptracehttp.WithTimeout(50*time.Millisecond),
+		otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
+			Enabled:         true,
+			InitialInterval: time.Millisecond,
+			MaxInterval:     time.Millisecond,
+			MaxElapsedTime:  time.Minute,
+		}),
+	)
+	ctx := t.Context()
+	exporter, err := otlptrace.New(ctx, client)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = exporter.Shutdown(t.Context()) })
+
+	start := time.Now()
+	err = exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan())
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		assert.ErrorContains(t, err, "exporter export timeout")
+	}
+	assert.Less(t, elapsed, 5*time.Second, "export retried until MaxElapsedTime")
+
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	assert.Positive(t, got)
+
+	// A request already sent before the export context expired can reach
+	// this handler after ExportSpans returns and bump calls by one. That
+	// in-flight attempt is not a new retry. The retry loop stops with the
+	// export timeout, so it must not keep issuing requests until
+	// MaxElapsedTime.
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.LessOrEqual(t, calls, got+1, "requests continued after the export timeout")
+}
+
+func TestWithHTTPClientIgnoresExporterTimeout(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := otlptracehttp.NewClient(
+		otlptracehttp.WithEndpointURL(srv.URL),
+		otlptracehttp.WithInsecure(),
+		otlptracehttp.WithTimeout(time.Millisecond),
+		otlptracehttp.WithHTTPClient(&http.Client{}),
+		otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: false}),
+	)
+	ctx := t.Context()
+	exporter, err := otlptrace.New(ctx, client)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = exporter.Shutdown(t.Context()) })
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan())
+	}()
+	select {
+	case err := <-errCh:
+		t.Fatalf("export finished before the collector responded: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("export did not finish")
+	}
+}
+
+func TestWithTimeoutZeroDoesNotSetDeadline(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := otlptracehttp.NewClient(
+		otlptracehttp.WithEndpointURL(srv.URL),
+		otlptracehttp.WithInsecure(),
+		otlptracehttp.WithTimeout(0),
+		otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
+			Enabled:         true,
+			InitialInterval: time.Millisecond,
+			MaxInterval:     time.Millisecond,
+			MaxElapsedTime:  time.Second,
+		}),
+	)
+	ctx := t.Context()
+	exporter, err := otlptrace.New(ctx, client)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = exporter.Shutdown(t.Context()) })
+
+	assert.NoError(t, exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan()))
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 2, calls)
 }
 
 func TestInsecureWithTLSClientConfig(t *testing.T) {
@@ -652,12 +788,7 @@ func TestClientInstrumentation(t *testing.T) {
 }
 
 func TestResponseBodySizeLimit(t *testing.T) {
-	// Override the limit to 1 byte so any non-empty response body exceeds it.
-	orig := *otlptracehttp.MaxResponseBodySize
-	*otlptracehttp.MaxResponseBodySize = 1
-	t.Cleanup(func() { *otlptracehttp.MaxResponseBodySize = orig })
-
-	// largeBody is larger than the 1-byte limit.
+	// largeBody is larger than the configured 1-byte limit.
 	largeBody := []byte("xx")
 
 	tests := []struct {
@@ -690,7 +821,13 @@ func TestResponseBodySizeLimit(t *testing.T) {
 			client := otlptracehttp.NewClient(
 				otlptracehttp.WithEndpointURL(srv.URL),
 				otlptracehttp.WithInsecure(),
-				otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: false}),
+				otlptracehttp.WithMaxResponseSize(1),
+				otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
+					Enabled:         true,
+					InitialInterval: time.Millisecond,
+					MaxInterval:     time.Millisecond,
+					MaxElapsedTime:  time.Second,
+				}),
 			)
 			exporter, err := otlptrace.New(t.Context(), client)
 			require.NoError(t, err)
@@ -701,6 +838,42 @@ func TestResponseBodySizeLimit(t *testing.T) {
 			assert.Equal(t, 1, calls, "request must not be retried after body-too-large error")
 		})
 	}
+}
+
+func TestResponseBodySizeLimitAfterDecompression(t *testing.T) {
+	const limit = 64
+	body := bytes.Repeat([]byte("x"), 1024)
+
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+		zw := gzip.NewWriter(w)
+		_, _ = zw.Write(body)
+		_ = zw.Close()
+	}))
+	t.Cleanup(srv.Close)
+
+	client := otlptracehttp.NewClient(
+		otlptracehttp.WithEndpointURL(srv.URL),
+		otlptracehttp.WithInsecure(),
+		otlptracehttp.WithMaxResponseSize(limit),
+		otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
+			Enabled:         true,
+			InitialInterval: time.Millisecond,
+			MaxInterval:     time.Millisecond,
+			MaxElapsedTime:  time.Second,
+		}),
+	)
+	exporter, err := otlptrace.New(t.Context(), client)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = exporter.Shutdown(t.Context()) })
+
+	err = exporter.ExportSpans(t.Context(), otlptracetest.SingleReadOnlySpan())
+	assert.ErrorContains(t, err, "response body too large: exceeded 64 bytes")
+	assert.Equal(t, 1, calls, "request must not be retried after body-too-large error")
 }
 
 func TestRequestBodySizeLimit(t *testing.T) {

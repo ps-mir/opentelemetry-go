@@ -47,13 +47,6 @@ var exporterN atomic.Int64
 
 var errInsecureEndpointWithTLS = errors.New("insecure HTTP endpoint cannot use TLS client configuration")
 
-// maxResponseBodySize is the maximum number of bytes to read from a response
-// body. It is set to 4 MiB per the OTLP specification recommendation to
-// mitigate excessive memory usage caused by a misconfigured or malicious
-// server. If this limit is exceeded, the response is treated as a non-retryable
-// error. This is a variable to allow tests to override it.
-var maxResponseBodySize int64 = 4 * 1024 * 1024
-
 // nextExporterID returns the next unique ID for an exporter.
 func nextExporterID() int64 {
 	const inc = 1
@@ -67,10 +60,14 @@ func newHTTPClient(ctx context.Context, cfg config) (*client, error) {
 	}
 
 	hc := cfg.httpClient
+	var exportTimeout time.Duration
 	if hc == nil {
+		// WithHTTPClient takes precedence over WithTimeout, so the exporter
+		// timeout is applied only for the client constructed here.
+		exportTimeout = cfg.timeout.Value
 		hc = &http.Client{
 			Transport: ourTransport,
-			Timeout:   cfg.timeout.Value,
+			Timeout:   exportTimeout,
 		}
 
 		if cfg.tlsCfg.Value != nil || cfg.proxy.Value != nil {
@@ -111,11 +108,13 @@ func newHTTPClient(ctx context.Context, cfg config) (*client, error) {
 	req.Header.Set("Content-Type", "application/x-protobuf")
 
 	c := &httpClient{
-		compression:    cfg.compression.Value,
-		maxRequestSize: cfg.maxRequestSize.Value,
-		req:            req,
-		requestFunc:    cfg.retryCfg.Value.RequestFunc(evaluate),
-		client:         hc,
+		compression:     cfg.compression.Value,
+		maxRequestSize:  cfg.maxRequestSize.Value,
+		maxResponseSize: cfg.maxResponseSize.Value,
+		req:             req,
+		requestFunc:     cfg.retryCfg.Value.RequestFunc(evaluate),
+		client:          hc,
+		exportTimeout:   exportTimeout,
 	}
 
 	id := nextExporterID()
@@ -126,11 +125,13 @@ func newHTTPClient(ctx context.Context, cfg config) (*client, error) {
 
 type httpClient struct {
 	// req is cloned for every upload the client makes.
-	req            *http.Request
-	compression    Compression
-	maxRequestSize int
-	requestFunc    retry.RequestFunc
-	client         *http.Client
+	req             *http.Request
+	compression     Compression
+	maxRequestSize  int
+	maxResponseSize int64
+	requestFunc     retry.RequestFunc
+	client          *http.Client
+	exportTimeout   time.Duration
 
 	inst *observ.Instrumentation
 }
@@ -182,6 +183,12 @@ func (c *httpClient) uploadLogs(ctx context.Context, data []*logpb.ResourceLogs)
 		return err
 	}
 
+	if c.exportTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, c.exportTimeout, errors.New("exporter export timeout"))
+		defer cancel()
+	}
+
 	return errors.Join(uploadErr, c.requestFunc(ctx, func(iCtx context.Context) error {
 		select {
 		case <-iCtx.Done():
@@ -214,10 +221,7 @@ func (c *httpClient) uploadLogs(ctx context.Context, data []*logpb.ResourceLogs)
 
 			// Read the partial success message, if any.
 			var respData bytes.Buffer
-			if _, err := io.Copy(&respData, http.MaxBytesReader(nil, resp.Body, maxResponseBodySize)); err != nil {
-				if maxBytesErr, ok := errors.AsType[*http.MaxBytesError](err); ok {
-					return fmt.Errorf("response body too large: exceeded %d bytes", maxBytesErr.Limit)
-				}
+			if err := internal.CopyResponseBody(&respData, resp.Body, c.maxResponseSize); err != nil {
 				return err
 			}
 			if respData.Len() == 0 {
@@ -248,10 +252,7 @@ func (c *httpClient) uploadLogs(ctx context.Context, data []*logpb.ResourceLogs)
 		// message to be returned. It will help in
 		// debugging the actual issue.
 		var respData bytes.Buffer
-		if _, err := io.Copy(&respData, http.MaxBytesReader(nil, resp.Body, maxResponseBodySize)); err != nil {
-			if maxBytesErr, ok := errors.AsType[*http.MaxBytesError](err); ok {
-				return fmt.Errorf("response body too large: exceeded %d bytes", maxBytesErr.Limit)
-			}
+		if err := internal.CopyResponseBody(&respData, resp.Body, c.maxResponseSize); err != nil {
 			return err
 		}
 		respStr := strings.TrimSpace(respData.String())
